@@ -1,0 +1,184 @@
+local AgentPatrolSystem = {}
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+-- Required remote event
+local DetectionAlert = ReplicatedStorage:WaitForChild("DetectionAlert")
+
+-- Configuration
+local AGENT_FOLDER = workspace:FindFirstChild("Agents")
+local WAYPOINTS_FOLDER = workspace:FindFirstChild("AgentWaypoints")
+local LOSE_TARGET_DELAY = 10
+local WAYPOINT_REACHED_DISTANCE = 3
+
+-- State
+local activeTargets = {}
+local lastSeenTimes = {}
+local patrolIndices = {}
+local moveConnections = {}
+local chasingAgents = {}
+
+-- Vision cone helper
+local function setVisionConeVisible(agent, visible)
+	local cone = agent:FindFirstChild("VisionCone")
+	if cone then
+		cone.Transparency = visible and 0.5 or 1
+	end
+end
+
+-- Move to point
+local function moveTo(agent, destination)
+	local humanoid = agent:FindFirstChild("Humanoid")
+	local root = agent:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not root then return end
+	humanoid:MoveTo(destination)
+end
+
+-- Patrol logic
+local function startPatrol(agent)
+	local wpFolder = WAYPOINTS_FOLDER and WAYPOINTS_FOLDER:FindFirstChild(agent.Name)
+	if not wpFolder then return end
+
+	local waypoints = {}
+	for _, wp in ipairs(wpFolder:GetChildren()) do
+		if wp:IsA("BasePart") then
+			table.insert(waypoints, wp)
+		end
+	end
+	if #waypoints == 0 then return end
+
+	table.sort(waypoints, function(a, b) return a.Name < b.Name end)
+	patrolIndices[agent] = patrolIndices[agent] or 1
+	local humanoid = agent:FindFirstChild("Humanoid")
+	if not humanoid then return end
+
+	if moveConnections[agent] then
+		moveConnections[agent]:Disconnect()
+		moveConnections[agent] = nil
+	end
+
+	moveConnections[agent] = humanoid.MoveToFinished:Connect(function(reached)
+		if activeTargets[agent] then return end
+		if reached then
+			patrolIndices[agent] = (patrolIndices[agent] % #waypoints) + 1
+		end
+		local nextWp = waypoints[patrolIndices[agent]]
+		if nextWp then
+			moveTo(agent, nextWp.Position)
+		end
+	end)
+
+	moveTo(agent, waypoints[patrolIndices[agent]].Position)
+end
+
+-- Detection logic using DetectionBox.Touched
+local function setupDetectionZone(agent)
+	local box = agent:FindFirstChild("DetectionBox")
+	if not box or not box:IsA("BasePart") then return end
+
+	box.Touched:Connect(function(hit)
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if player and activeTargets[agent] ~= player then
+			activeTargets[agent] = player
+			lastSeenTimes[agent] = tick()
+			setVisionConeVisible(agent, false)
+
+			chasingAgents[player] = chasingAgents[player] or {}
+			local firstDetect = next(chasingAgents[player]) == nil
+			chasingAgents[player][agent] = true
+
+			if firstDetect then
+				DetectionAlert:FireClient(player, true)
+			end
+		end
+	end)
+end
+
+-- Weld VisionCone to Agents
+local function beginAgentTracking(agent)
+	local root = agent:FindFirstChild("HumanoidRootPart")
+	local cone = agent:FindFirstChild("VisionCone")
+
+	if root and cone and not cone:FindFirstChildOfClass("WeldConstraint") then
+		cone.Anchored = false
+		cone.CanCollide = false
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = root
+		weld.Part1 = cone
+		weld.Parent = cone
+	end
+
+	setVisionConeVisible(agent, true)
+	setupDetectionZone(agent)
+	startPatrol(agent)
+end
+
+-- Initialization
+function AgentPatrolSystem.init()
+	if not AGENT_FOLDER then
+		warn("Agents folder not found in Workspace.")
+		return
+	end
+
+	for _, agent in ipairs(AGENT_FOLDER:GetChildren()) do
+		if agent:IsA("Model") and agent:FindFirstChild("Humanoid") and agent:FindFirstChild("HumanoidRootPart") then
+			beginAgentTracking(agent)
+		end
+	end
+
+	RunService.Heartbeat:Connect(function()
+		for _, agent in ipairs(AGENT_FOLDER:GetChildren()) do
+			local humanoid = agent:FindFirstChild("Humanoid")
+			local root = agent:FindFirstChild("HumanoidRootPart")
+			if humanoid and root then
+				local player = activeTargets[agent]
+				if player then
+					local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					local elapsed = tick() - (lastSeenTimes[agent] or 0)
+
+					local shouldContinue = false
+					if hrp then
+						local dist = (root.Position - hrp.Position).Magnitude
+						if dist <= 25 then
+							lastSeenTimes[agent] = tick()
+						end
+						if elapsed < LOSE_TARGET_DELAY then
+							humanoid:MoveTo(hrp.Position)
+							shouldContinue = true
+						end
+					end
+
+					if not shouldContinue then
+						activeTargets[agent] = nil
+						lastSeenTimes[agent] = nil
+						setVisionConeVisible(agent, true)
+
+						if chasingAgents[player] then
+							chasingAgents[player][agent] = nil
+							if next(chasingAgents[player]) == nil then
+								DetectionAlert:FireClient(player, false)
+								chasingAgents[player] = nil
+							end
+						end
+
+						local wpFolder = WAYPOINTS_FOLDER and WAYPOINTS_FOLDER:FindFirstChild(agent.Name)
+						if wpFolder then
+							local wp1 = wpFolder:FindFirstChild("Waypoint1")
+							if wp1 and wp1:IsA("BasePart") then
+								root.CFrame = wp1.CFrame + Vector3.new(0, 3, 0)
+							end
+						end
+
+						startPatrol(agent)
+					end
+				end
+			end
+		end
+	end)
+
+	print("Agent Patrol System Initialized.")
+end
+
+return AgentPatrolSystem
