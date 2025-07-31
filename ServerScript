@@ -1,0 +1,8 @@
+--ServerScriptService folder
+-- starting the game on server start
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GameManager = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("GameManager"))
+
+-- Start all game stuff
+GameManager.init()
