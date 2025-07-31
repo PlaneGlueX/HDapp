@@ -1,0 +1,48 @@
+--ReplicatedStorage
+local GameManager = {}
+
+local Players = game:GetService("Players")
+
+local ServerScriptService = game:GetService("ServerScriptService")
+
+
+-- require all modules
+local AgentPatrolSystem
+
+local function safeRequire(moduleRef, name)
+	local success, result = pcall(require, moduleRef)
+	if not success then
+		warn((" Failed to require module '%s': %s"):format(name, result))
+		return nil
+	end
+	print(("Module loaded: %s"):format(name))
+	return result
+end
+
+local modules = script.Parent
+
+-- game breaks without the safe require
+AgentPatrolSystem = safeRequire(modules:FindFirstChild("AgentPatrolSystem"), "AgentPatrolSystem")
+
+
+
+
+-- initialization
+function GameManager.init()
+
+	if AgentPatrolSystem and AgentPatrolSystem.init then
+		local success, err = pcall(function() AgentPatrolSystem.init(workspace) end)
+		if not success then warn("AgentPatrolSystem init failed:", err) end
+	end
+
+
+	print("All core systems initialized!")
+
+
+function GameManager.getSystems()
+	return {
+		AgentPatrol = AgentPatrolSystem,
+	}
+end
+
+return GameManager
